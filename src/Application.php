@@ -27,11 +27,13 @@ final readonly class Application
 
     private function createDefaultContainer(): WritableContainerInterface
     {
-        return class_exists(\Solo\Container\Container::class)
-            ? new \Solo\Container\Container()
-            : throw new RuntimeException(
+        if (!class_exists(\Solo\Container\Container::class)) {
+            throw new RuntimeException(
                 'No container provided. Install solophp/container or pass your own WritableContainerInterface.'
             );
+        }
+
+        return new \Solo\Container\Container();
     }
 
     private function bootstrap(): void

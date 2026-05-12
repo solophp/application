@@ -22,41 +22,26 @@ final readonly class RouteDispatcher implements RequestHandlerInterface
     public function handle(ServerRequestInterface $request): ResponseInterface
     {
         $handler = $request->getAttribute('handler');
-        $params = $request->getAttribute('params', []);
 
         if ($handler === null) {
             return $this->responseFactory->createResponse(404);
         }
 
-        $response = $this->responseFactory->createResponse();
+        $callable = match (true) {
+            is_array($handler) && count($handler) === 2
+                => [$this->container->get($handler[0]), $handler[1]],
+            is_string($handler)
+                => $this->container->get($handler),
+            is_callable($handler)
+                => $handler,
+            default
+                => throw new InvalidArgumentException('Invalid route handler'),
+        };
 
-        return $this->invoke($handler, $request, $response, $params);
-    }
-
-    private function invoke(
-        mixed $handler,
-        ServerRequestInterface $request,
-        ResponseInterface $response,
-        array $params
-    ): ResponseInterface {
-        // [Controller::class, 'method']
-        if (is_array($handler) && count($handler) === 2) {
-            [$class, $method] = $handler;
-            $controller = $this->container->get($class);
-            return $controller->$method($request, $response, $params);
-        }
-
-        // Invokable class
-        if (is_string($handler)) {
-            $controller = $this->container->get($handler);
-            return $controller($request, $response, $params);
-        }
-
-        // Callable
-        if (is_callable($handler)) {
-            return $handler($request, $response, $params);
-        }
-
-        throw new InvalidArgumentException('Invalid route handler');
+        return $callable(
+            $request,
+            $this->responseFactory->createResponse(),
+            $request->getAttribute('params', []),
+        );
     }
 }

@@ -5,16 +5,13 @@ declare(strict_types=1);
 namespace Solo\Application\Tests;
 
 use PHPUnit\Framework\TestCase;
-use Psr\Container\ContainerInterface;
 use Psr\Http\Message\ResponseFactoryInterface;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\MiddlewareInterface;
-use Psr\Http\Server\RequestHandlerInterface;
-use RuntimeException;
 use Solo\Application\Application;
 use Solo\Application\Config;
-use Solo\Application\RouteDispatcher;
+use Solo\Container\Container;
 use Solo\Contracts\Container\WritableContainerInterface;
 use Solo\Contracts\Http\EmitterInterface;
 use Solo\Contracts\Router\RouterInterface;
@@ -31,14 +28,12 @@ final class ApplicationTest extends TestCase
 
     protected function tearDown(): void
     {
-        if (file_exists($this->routesFile)) {
-            unlink($this->routesFile);
-        }
+        @unlink($this->routesFile);
     }
 
     public function testConstructorSetsConfigInContainer(): void
     {
-        $container = $this->createWritableContainer();
+        $container = $this->createContainer();
         $config = $this->createConfig();
 
         $app = new Application($config, $container);
@@ -49,21 +44,16 @@ final class ApplicationTest extends TestCase
 
     public function testConstructorUsesDefaultContainer(): void
     {
-        $config = new Config(
-            basePath: '/app',
-            routesPath: $this->routesFile,
-            providers: [TestServiceProvider::class],
-            middleware: [],
-        );
+        $config = $this->createConfig(providers: [TestServiceProvider::class]);
 
         $app = new Application($config);
 
-        $this->assertInstanceOf(\Solo\Container\Container::class, $app->container);
+        $this->assertInstanceOf(Container::class, $app->container);
     }
 
     public function testConstructorRegistersProviders(): void
     {
-        $container = $this->createWritableContainer();
+        $container = $this->createContainer();
 
         $providerFile = sys_get_temp_dir() . '/test_provider_' . uniqid() . '.php';
         $markerFile = sys_get_temp_dir() . '/provider_called_' . uniqid();
@@ -79,12 +69,7 @@ final class ApplicationTest extends TestCase
         $provider = require $providerFile;
         $providerClass = get_class($provider);
 
-        $config = new Config(
-            basePath: '/app',
-            routesPath: $this->routesFile,
-            providers: [$providerClass],
-            middleware: [],
-        );
+        $config = $this->createConfig(providers: [$providerClass]);
 
         new Application($config, $container);
 
@@ -96,162 +81,88 @@ final class ApplicationTest extends TestCase
 
     public function testRunExecutesMiddlewarePipelineAndEmitsResponse(): void
     {
-        $response = $this->createMock(ResponseInterface::class);
-        $request = $this->createMock(ServerRequestInterface::class);
-        $request->method('getAttribute')->willReturnMap([
-            ['handler', null, fn($req, $res, $params) => $res],
-            ['params', [], []],
-        ]);
+        $request = $this->createRequestWithRoute(fn($req, $res, $params) => $res);
 
         $emitter = $this->createMock(EmitterInterface::class);
         $emitter->expects($this->once())->method('emit')->with($this->isInstanceOf(ResponseInterface::class));
 
-        $responseFactory = $this->createMock(ResponseFactoryInterface::class);
-        $responseFactory->method('createResponse')->willReturn($response);
+        $container = $this->createContainer($request, $emitter);
 
-        $router = $this->createMock(RouterInterface::class);
-
-        $services = [
-            RouterInterface::class => $router,
-            ResponseFactoryInterface::class => $responseFactory,
-            ServerRequestInterface::class => $request,
-            EmitterInterface::class => $emitter,
-        ];
-
-        $container = $this->createMock(WritableContainerInterface::class);
-        $container->method('get')->willReturnCallback(function ($id) use ($services, $container, $responseFactory) {
-            if ($id === ContainerInterface::class || $id === WritableContainerInterface::class) {
-                return $container;
-            }
-            if ($id === RouteDispatcher::class) {
-                return new RouteDispatcher($container, $responseFactory);
-            }
-            return $services[$id] ?? null;
-        });
-
-        $config = $this->createConfig();
-        $app = new Application($config, $container);
+        $app = new Application($this->createConfig(), $container);
         $app->run($request);
     }
 
     public function testRunUsesRequestFromContainerWhenNotProvided(): void
     {
-        $response = $this->createMock(ResponseInterface::class);
-        $request = $this->createMock(ServerRequestInterface::class);
-        $request->method('getAttribute')->willReturnMap([
-            ['handler', null, fn($req, $res, $params) => $res],
-            ['params', [], []],
-        ]);
+        $request = $this->createRequestWithRoute(fn($req, $res, $params) => $res);
 
         $emitter = $this->createMock(EmitterInterface::class);
         $emitter->expects($this->once())->method('emit');
 
-        $responseFactory = $this->createMock(ResponseFactoryInterface::class);
-        $responseFactory->method('createResponse')->willReturn($response);
+        $container = $this->createContainer($request, $emitter);
 
-        $router = $this->createMock(RouterInterface::class);
-
-        $services = [
-            RouterInterface::class => $router,
-            ResponseFactoryInterface::class => $responseFactory,
-            ServerRequestInterface::class => $request,
-            EmitterInterface::class => $emitter,
-        ];
-
-        $container = $this->createMock(WritableContainerInterface::class);
-        $container->method('get')->willReturnCallback(function ($id) use ($services, $container, $responseFactory) {
-            if ($id === ContainerInterface::class || $id === WritableContainerInterface::class) {
-                return $container;
-            }
-            if ($id === RouteDispatcher::class) {
-                return new RouteDispatcher($container, $responseFactory);
-            }
-            return $services[$id] ?? null;
-        });
-
-        $config = $this->createConfig();
-        $app = new Application($config, $container);
+        $app = new Application($this->createConfig(), $container);
         $app->run();
     }
 
     public function testRunWithMiddleware(): void
     {
-        $response = $this->createMock(ResponseInterface::class);
         $modifiedResponse = $this->createMock(ResponseInterface::class);
-
-        $request = $this->createMock(ServerRequestInterface::class);
-        $request->method('getAttribute')->willReturnMap([
-            ['handler', null, fn($req, $res, $params) => $res],
-            ['params', [], []],
-        ]);
+        $request = $this->createRequestWithRoute(fn($req, $res, $params) => $res);
 
         $middleware = $this->createMock(MiddlewareInterface::class);
-        $middleware->method('process')->willReturnCallback(function ($request, $handler) use ($modifiedResponse) {
-            return $modifiedResponse;
-        });
+        $middleware->method('process')->willReturn($modifiedResponse);
 
         $emitter = $this->createMock(EmitterInterface::class);
         $emitter->expects($this->once())->method('emit')->with($modifiedResponse);
 
-        $responseFactory = $this->createMock(ResponseFactoryInterface::class);
-        $responseFactory->method('createResponse')->willReturn($response);
+        $container = $this->createContainer($request, $emitter);
+        $container->set('TestMiddleware', fn() => $middleware);
 
-        $router = $this->createMock(RouterInterface::class);
-
-        $services = [
-            RouterInterface::class => $router,
-            ResponseFactoryInterface::class => $responseFactory,
-            ServerRequestInterface::class => $request,
-            EmitterInterface::class => $emitter,
-            'TestMiddleware' => $middleware,
-        ];
-
-        $container = $this->createMock(WritableContainerInterface::class);
-        $container->method('get')->willReturnCallback(function ($id) use ($services, $container, $responseFactory) {
-            if ($id === ContainerInterface::class || $id === WritableContainerInterface::class) {
-                return $container;
-            }
-            if ($id === RouteDispatcher::class) {
-                return new RouteDispatcher($container, $responseFactory);
-            }
-            return $services[$id] ?? null;
-        });
-
-        $config = new Config(
-            basePath: '/app',
-            routesPath: $this->routesFile,
-            providers: [],
-            middleware: ['TestMiddleware'],
+        $app = new Application(
+            $this->createConfig(middleware: ['TestMiddleware']),
+            $container,
         );
-
-        $app = new Application($config, $container);
         $app->run($request);
     }
 
-    private function createConfig(): Config
+    private function createConfig(array $providers = [], array $middleware = []): Config
     {
         return new Config(
             basePath: '/app',
             routesPath: $this->routesFile,
-            providers: [],
-            middleware: [],
+            providers: $providers,
+            middleware: $middleware,
         );
     }
 
-    private function createWritableContainer(): WritableContainerInterface
-    {
-        $router = $this->createMock(RouterInterface::class);
-        $responseFactory = $this->createMock(ResponseFactoryInterface::class);
-
-        $container = $this->createMock(WritableContainerInterface::class);
-        $container->method('get')->willReturnCallback(function ($id) use ($router, $responseFactory) {
-            return match ($id) {
-                RouterInterface::class => $router,
-                ResponseFactoryInterface::class => $responseFactory,
-                default => null,
-            };
+    private function createContainer(
+        ?ServerRequestInterface $request = null,
+        ?EmitterInterface $emitter = null,
+    ): WritableContainerInterface {
+        $container = new Container();
+        $container->set(RouterInterface::class, fn() => $this->createMock(RouterInterface::class));
+        $container->set(ResponseFactoryInterface::class, function () {
+            $factory = $this->createMock(ResponseFactoryInterface::class);
+            $factory->method('createResponse')->willReturn($this->createMock(ResponseInterface::class));
+            return $factory;
         });
-
+        if ($request !== null) {
+            $container->set(ServerRequestInterface::class, fn() => $request);
+        }
+        if ($emitter !== null) {
+            $container->set(EmitterInterface::class, fn() => $emitter);
+        }
         return $container;
+    }
+
+    private function createRequestWithRoute(callable $handler, array $params = []): ServerRequestInterface
+    {
+        $request = $this->createMock(ServerRequestInterface::class);
+        $request->method('getAttribute')->willReturnMap([
+            ['handler', null, $handler],
+            ['params', [], $params],
+        ]);
+        return $request;
     }
 }
